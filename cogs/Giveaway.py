@@ -28,34 +28,59 @@ class TimeConverter(commands.Converter):
 
 
 class Button(discord.ui.View):
-    def __init__(self,client, *, timeout=180):
+    def __init__(self, client, *, timeout=180, required_role=None, prohibited_role=None, message_count_month=None, message_count_week=None, message_count_day=None):
         super().__init__(timeout=None)
         self.client = client
+        self.required_role = required_role
+        self.prohibited_role = prohibited_role
+        self.message_count_month = message_count_month
+        self.message_count_week = message_count_week
+        self.message_count_day = message_count_day
 
-    @discord.ui.button(label=f"Entries: 0",custom_id="Entry",style=discord.ButtonStyle.grey,disabled=True) # or .primary
-    async def Entry_Button(self,interaction:discord.Interaction,button2: discord.ui.Button):
+    @discord.ui.button(label=f"Entries: 0", custom_id="Entry", style=discord.ButtonStyle.grey, disabled=True)
+    async def Entry_Button(self, interaction: discord.Interaction, button2: discord.ui.Button):
         pass
 
-    @discord.ui.button(label="Join",custom_id="Joiner",style=discord.ButtonStyle.green,emoji="✅")
-    async def Join_Button(self,interaction:discord.Interaction,button: discord.ui.Button):
+    @discord.ui.button(label="Join", custom_id="Joiner", style=discord.ButtonStyle.green, emoji="✅")
+    async def Join_Button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Check if the user meets the requirements
+        if self.required_role and self.required_role not in [role.id for role in interaction.user.roles]:
+            return await interaction.response.send_message("You don't have the required role to join this giveaway.", ephemeral=True)
 
+        if self.prohibited_role and self.prohibited_role in [role.id for role in interaction.user.roles]:
+            return await interaction.response.send_message("You have a prohibited role and cannot join this giveaway.", ephemeral=True)
+
+        # Check message count requirements
+        if self.message_count_month:
+            count = sum(1 for m in await interaction.channel.history(after=datetime.datetime.now() - datetime.timedelta(days=30)).filter(lambda m: m.author == interaction.user).flatten())
+            if count < self.message_count_month:
+                return await interaction.response.send_message(f"You need to have sent at least {self.message_count_month} messages this month to join this giveaway.", ephemeral=True)
+
+        if self.message_count_week:
+            count = sum(1 for m in await interaction.channel.history(after=datetime.datetime.now() - datetime.timedelta(days=7)).filter(lambda m: m.author == interaction.user).flatten())
+            if count < self.message_count_week:
+                return await interaction.response.send_message(f"You need to have sent at least {self.message_count_week} messages this week to join this giveaway.", ephemeral=True)
+
+        if self.message_count_day:
+            count = sum(1 for m in await interaction.channel.history(after=datetime.datetime.now() - datetime.timedelta(days=1)).filter(lambda m: m.author == interaction.user).flatten())
+            if count < self.message_count_day:
+                return await interaction.response.send_message(f"You need to have sent at least {self.message_count_day} messages today to join this giveaway.", ephemeral=True)
+
+        # If the user meets the requirements, proceed with the giveaway entry
         cur = await self.client.db.execute("SELECT user_id FROM Giveaway_Entry WHERE message_id = ?", (interaction.message.id,))
         res = await cur.fetchall()
 
-        if res != None:
+        if res is not None:
             for x in res:
                 if interaction.user.id == x[0]:
-                    return await interaction.response.send_message("You already entered this Giveaway.",ephemeral=True)
+                    return await interaction.response.send_message("You already entered this giveaway.", ephemeral=True)
 
-
-        await self.client.db.execute("UPDATE Giveaway_Running SET entries = entries + ? WHERE unique_id = ?", (1,int(interaction.message.id),) )
+        await self.client.db.execute("UPDATE Giveaway_Running SET entries = entries + ? WHERE unique_id = ?", (1, int(interaction.message.id),))
         await self.client.db.commit()
-
-
 
         cur = await self.client.db.execute("SELECT entries FROM Giveaway_Running WHERE unique_id = ?", (interaction.message.id,))
         res = await cur.fetchone()
-        self.children[0].label=f"Entries: {res[0]}"
+        self.children[0].label = f"Entries: {res[0]}"
         await self.client.db.execute("INSERT OR IGNORE INTO Giveaway_Entry (user_id, message_id) VALUES (?,?)", (interaction.user.id, interaction.message.id))
         await self.client.db.commit()
         await interaction.response.edit_message(view=self)
@@ -70,13 +95,13 @@ class Giveaway(commands.Cog):
 
     @commands.command()
     @commands.has_permissions(administrator=True)
-    async def start(self,ctx,GiveawayDuration:TimeConverter = None, winner = None, *,prize):
+    async def start(self, ctx, GiveawayDuration: TimeConverter = None, winner=None, *, prize, required_role: discord.Role = None, prohibited_role: discord.Role = None, message_count_month: int = None, message_count_week: int = None, message_count_day: int = None):
         hours, remainder = divmod(int(GiveawayDuration), 3600)
         minutes, seconds = divmod(remainder, 60)
         days, hours = divmod(hours, 24)
         embed = discord.Embed(description=f"**{prize}**\n\nWinner: \TBA/\nHosted by: {ctx.author.mention}\n\n♜{days}d:{hours}h:{minutes}m♜", colour=discord.Colour(0x36393e))
-        message = await ctx.send(content=":piñata:**__Giveaway Started__**:piñata:",embed=embed,view=Button(self.client))
-        await self.client.db.execute("INSERT OR IGNORE INTO Giveaway_Running (unique_id,channel_id,prize,hostedby,total,running,entries,winners) VALUES (?,?,?,?,?,?,?,?)", (message.id,ctx.channel.id,prize,ctx.author.id,GiveawayDuration, 1,0, winner))
+        message = await ctx.send(content=":piñata:**__Giveaway Started__**:piñata:", embed=embed, view=Button(self.client, required_role=required_role.id if required_role else None, prohibited_role=prohibited_role.id if prohibited_role else None, message_count_month=message_count_month, message_count_week=message_count_week, message_count_day=message_count_day))
+        await self.client.db.execute("INSERT OR IGNORE INTO Giveaway_Running (unique_id, channel_id, prize, hostedby, total, running, entries, winners) VALUES (?,?,?,?,?,?,?,?)", (message.id, ctx.channel.id, prize, ctx.author.id, GiveawayDuration, 1, 0, winner))
         await self.client.db.commit()
 
 
